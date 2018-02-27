@@ -9,9 +9,11 @@ import numpy as np
 import keras.backend as K
 
 from keras.datasets import cifar10
-from keras.optimizers import Adam
+from keras.optimizers import SGD, Adam
 from keras.utils import np_utils
+import math
 
+momentum = 0.0
 
 def run_cifar10(batch_size,
                 nb_epoch,
@@ -93,15 +95,15 @@ def run_cifar10(batch_size,
     model.summary()
 
     # Build optimizer
-    opt = Adam(lr=learning_rate, beta_1=0.9, beta_2=0.999, epsilon=1e-08)
+    opt0 = Adam(lr=learning_rate, beta_1=0.9, beta_2=0.999, epsilon=1e-08)
 
     model.compile(loss='categorical_crossentropy',
-                  optimizer=opt,
+                  optimizer=opt0,
                   metrics=["accuracy"])
 
     if plot_architecture:
-        from keras.utils.visualize_util import plot
-        plot(model, to_file='./figures/densenet_archi.png', show_shapes=True)
+        from keras.utils.vis_utils import plot_model
+        plot_model(model, to_file='./figures/densenet_archi.png', show_shapes=True)
 
     ####################
     # Network training #
@@ -112,13 +114,16 @@ def run_cifar10(batch_size,
     list_train_loss = []
     list_test_loss = []
     list_learning_rate = []
+    set_lr = learning_rate
 
-    for e in range(nb_epoch):
+    # First step
+    nb_epoch_opt0 = nb_epoch//10
+    for e in range(nb_epoch_opt0):
 
-        if e == int(0.5 * nb_epoch):
+        if e == int(0.5 * nb_epoch_opt0):
             K.set_value(model.optimizer.lr, np.float32(learning_rate / 10.))
 
-        if e == int(0.75 * nb_epoch):
+        if e == int(0.75 * nb_epoch_opt0):
             K.set_value(model.optimizer.lr, np.float32(learning_rate / 100.))
 
         split_size = batch_size
@@ -131,24 +136,112 @@ def run_cifar10(batch_size,
         for batch_idx in arr_splits:
 
             X_batch, Y_batch = X_train[batch_idx], Y_train[batch_idx]
-            train_logloss, train_acc = model.train_on_batch(X_batch, Y_batch)
+            _, _ = model.train_on_batch(X_batch, Y_batch)
 
-            l_train_loss.append([train_logloss, train_acc])
+
+
+        train_logloss, train_acc = model.evaluate(X_train,
+                                                Y_train,
+                                                verbose=0,
+                                                batch_size=64)
+        print('\ttrain_acc = %.6f' % train_acc)
+        #l_train_loss.append([train_logloss, train_acc])
 
         test_logloss, test_acc = model.evaluate(X_test,
                                                 Y_test,
                                                 verbose=0,
                                                 batch_size=64)
-        list_train_loss.append(np.mean(np.array(l_train_loss), 0).tolist())
+        print('\t\t test_acc = %.6f' % test_acc)
+
+        
+
+        list_train_loss.append([train_logloss, train_acc])
         list_test_loss.append([test_logloss, test_acc])
         list_learning_rate.append(float(K.get_value(model.optimizer.lr)))
         # to convert numpy array to json serializable
-        print('Epoch %s/%s, Time: %s' % (e + 1, nb_epoch, time.time() - start))
+        print('\t\t\tEpoch %s/%s, Time: %s' % (e + 1, nb_epoch, time.time() - start))
+
+
+        #file_name = 'checkpoints/{nb_epoch:04d}-{train_logloss:.3f}-{:.3f}-{train_acc:.3f}-{test_acc:.3f}-lr%.6f-m%d-b%d.h5' % ( set_lr, momentum, batch_size)
+        file_name = 'checkpoints/e%d-trl%.3f-tel%.3f-tracc%.3f-teacc%.3f-lr%.6f-m%d-b%d.h5'\
+                        % ( e, train_logloss, test_logloss, train_acc, test_acc, set_lr, momentum, batch_size)
+
+        print(file_name)
+        model.save(file_name)
 
         d_log = {}
         d_log["batch_size"] = batch_size
         d_log["nb_epoch"] = nb_epoch
-        d_log["optimizer"] = opt.get_config()
+        d_log["optimizer"] = opt0.get_config()
+        d_log["train_loss"] = list_train_loss
+        d_log["test_loss"] = list_test_loss
+        d_log["learning_rate"] = list_learning_rate
+
+        json_file = os.path.join('./log/experiment_log_cifar10.json')
+        with open(json_file, 'w') as fp:
+            json.dump(d_log, fp, indent=4, sort_keys=True)
+    print('########################################Second round#################################')
+    opt1 = SGD(lr=learning_rate, momentum=momentum, decay=0.0, nesterov=False)
+
+    model.compile(loss='categorical_crossentropy',
+                  optimizer=opt1,
+                  metrics=["accuracy"])
+    # Second step
+    for e in range(nb_epoch):
+
+
+        # set_lr = np.float32(10 ** ( math.log10(learning_rate) - math.floor( e/500)))
+        set_lr = set_lr * 0.99**math.floor(e/10)
+        K.set_value(model.optimizer.lr, set_lr)
+        print('set_lr = %.10f' % set_lr)
+
+        split_size = batch_size
+        num_splits = X_train.shape[0] / split_size
+        arr_splits = np.array_split(np.arange(X_train.shape[0]), num_splits)
+
+        l_train_loss = []
+        start = time.time()
+
+        for batch_idx in arr_splits:
+
+            X_batch, Y_batch = X_train[batch_idx], Y_train[batch_idx]
+            _, _ = model.train_on_batch(X_batch, Y_batch)
+
+
+
+        train_logloss, train_acc = model.evaluate(X_train,
+                                                Y_train,
+                                                verbose=0,
+                                                batch_size=64)
+        print('\ttrain_acc = %.6f' % train_acc)
+        #l_train_loss.append([train_logloss, train_acc])
+
+        test_logloss, test_acc = model.evaluate(X_test,
+                                                Y_test,
+                                                verbose=0,
+                                                batch_size=64)
+        print('\t\t test_acc = %.6f' % test_acc)
+
+        
+
+        list_train_loss.append([train_logloss, train_acc])
+        list_test_loss.append([test_logloss, test_acc])
+        list_learning_rate.append(float(K.get_value(model.optimizer.lr)))
+        # to convert numpy array to json serializable
+        print('\t\t\tEpoch %s/%s, Time: %s' % (e + 1, nb_epoch, time.time() - start))
+
+
+        #file_name = 'checkpoints/{nb_epoch:04d}-{train_logloss:.3f}-{:.3f}-{train_acc:.3f}-{test_acc:.3f}-lr%.6f-m%d-b%d.h5' % ( set_lr, momentum, batch_size)
+        file_name = 'checkpoints/e%d-trl%.3f-tel%.3f-tracc%.3f-teacc%.3f-lr%.6f-m%d-b%d.h5'\
+                        % ( e, train_logloss, test_logloss, train_acc, test_acc, set_lr, momentum, batch_size)
+
+        print(file_name)
+        model.save(file_name)
+
+        d_log = {}
+        d_log["batch_size"] = batch_size
+        d_log["nb_epoch"] = nb_epoch
+        d_log["optimizer"] = opt1.get_config()
         d_log["train_loss"] = list_train_loss
         d_log["test_loss"] = list_test_loss
         d_log["learning_rate"] = list_learning_rate
@@ -163,11 +256,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Run CIFAR10 experiment')
     parser.add_argument('--batch_size', default=64, type=int,
                         help='Batch size')
-    parser.add_argument('--nb_epoch', default=30, type=int,
+    parser.add_argument('--nb_epoch', default=3000, type=int,
                         help='Number of epochs')
-    parser.add_argument('--depth', type=int, default=7,
+    parser.add_argument('--depth', type=int, default=13,
                         help='Network depth')
-    parser.add_argument('--nb_dense_block', type=int, default=1,
+    parser.add_argument('--nb_dense_block', type=int, default=2,
                         help='Number of dense blocks')
     parser.add_argument('--nb_filter', type=int, default=16,
                         help='Initial number of conv filters')
@@ -179,7 +272,7 @@ if __name__ == '__main__':
                         help='Learning rate')
     parser.add_argument('--weight_decay', type=float, default=1E-4,
                         help='L2 regularization on weights')
-    parser.add_argument('--plot_architecture', type=bool, default=False,
+    parser.add_argument('--plot_architecture', type=bool, default=True,
                         help='Save a plot of the network architecture')
 
     args = parser.parse_args()
